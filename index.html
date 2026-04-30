@@ -1,0 +1,357 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Pyramid 3D Chess Prototype</title>
+  <style>
+    :root {
+      --bg: #11161d;
+      --panel: #1a212b;
+      --light: #d7b98a;
+      --dark: #6b4f33;
+      --accent: #60d0ff;
+      --warn: #ffcc66;
+      --good: #7bff9e;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Inter, "Hiragino Kaku Gothic ProN", "Yu Gothic", sans-serif;
+      background: radial-gradient(circle at 20% 10%, #202a36, var(--bg));
+      color: #f2f5f8;
+      min-height: 100vh;
+    }
+    header, .controls {
+      background: color-mix(in srgb, var(--panel) 90%, #000);
+      border-bottom: 1px solid #2a3544;
+      padding: 12px 16px;
+    }
+    header h1 { margin: 0; font-size: 1.1rem; }
+    .layout { display: grid; grid-template-columns: 340px 1fr; min-height: calc(100vh - 56px); }
+    .controls {
+      border-right: 1px solid #2a3544;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .controls h2 { margin: 4px 0; font-size: 1rem; }
+    .controls .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    label { font-size: 0.88rem; color: #d3dbe5; display: flex; flex-direction: column; gap: 4px; }
+    input, button, select {
+      background: #0f141c;
+      color: #f2f5f8;
+      border: 1px solid #324055;
+      border-radius: 8px;
+      padding: 8px;
+    }
+    button { cursor: pointer; }
+    button.primary { border-color: #3f84c7; background: #15314d; }
+    button:hover { filter: brightness(1.08); }
+
+    main { padding: 16px; overflow: auto; }
+    .board-stack {
+      display: flex;
+      flex-direction: column-reverse;
+      align-items: center;
+      gap: 14px;
+      padding-bottom: 22px;
+    }
+    .level {
+      background: rgba(12, 18, 26, 0.85);
+      padding: 8px;
+      border-radius: 12px;
+      border: 1px solid #2b3a4d;
+      box-shadow: 0 8px 18px rgba(0,0,0,.35);
+    }
+    .level h3 { margin: 0 0 6px; font-size: .85rem; color: #b9c9dd; }
+    .grid {
+      display: grid;
+      gap: 2px;
+      user-select: none;
+    }
+    .cell {
+      width: 44px; height: 44px;
+      display: grid; place-items: center;
+      font-size: 1.45rem;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: transform .05s ease;
+      position: relative;
+    }
+    .cell.light { background: var(--light); color: #20140a; }
+    .cell.dark { background: var(--dark); color: #f4e9dd; }
+    .cell:hover { transform: translateY(-1px); }
+    .cell.selected { outline: 3px solid var(--accent); z-index: 2; }
+    .cell.valid::after {
+      content: "";
+      width: 12px; height: 12px; border-radius: 999px;
+      background: color-mix(in srgb, var(--good) 85%, white);
+      position: absolute;
+      box-shadow: 0 0 0 2px rgba(0,0,0,.25);
+    }
+    .cell.capture::after {
+      width: 100%; height: 100%; border-radius: 6px;
+      border: 3px solid #ff7979; background: transparent;
+    }
+    .status {
+      border-top: 1px solid #2a3544;
+      padding-top: 10px;
+      font-size: .9rem;
+      color: #d8e4f1;
+    }
+    .hint { color: #9eb3ca; font-size: .8rem; line-height: 1.45; }
+    @media (max-width: 980px) {
+      .layout { grid-template-columns: 1fr; }
+      .controls { border-right: none; border-bottom: 1px solid #2a3544; }
+    }
+  </style>
+</head>
+<body>
+  <header><h1>ピラミッド型 3D チェス（HTMLプロトタイプ）</h1></header>
+  <div class="layout">
+    <section class="controls">
+      <h2>設定</h2>
+      <div class="row">
+        <label>ベース盤サイズ
+          <input id="baseSize" type="number" min="4" max="12" step="1" value="8" />
+        </label>
+        <label>レベル数
+          <input id="levels" type="number" min="2" max="8" step="1" value="4" />
+        </label>
+      </div>
+      <div class="row">
+        <button id="resetDefault" class="primary">標準配置で再生成</button>
+        <button id="clearBoard">盤面クリア</button>
+      </div>
+      <div class="status" id="status">White の手番です</div>
+      <div class="hint">
+        仕様メモ: 初期配置は最下層(8x8)を通常チェス準拠。上層は空です。<br>
+        3D移動は「同じパターンでレベル差にも移動可能」という簡易ルールで実装しています。
+      </div>
+    </section>
+    <main>
+      <div id="board" class="board-stack"></div>
+    </main>
+  </div>
+
+  <script>
+    const PIECES = {
+      white: { king: "♔", queen: "♕", rook: "♖", bishop: "♗", knight: "♘", pawn: "♙" },
+      black: { king: "♚", queen: "♛", rook: "♜", bishop: "♝", knight: "♞", pawn: "♟" }
+    };
+
+    const state = {
+      board: [],
+      turn: "white",
+      selected: null,
+      validMoves: [],
+      config: { baseSize: 8, levels: 4 }
+    };
+
+    const statusEl = document.getElementById("status");
+    const boardEl = document.getElementById("board");
+
+    function makeEmptyBoard(baseSize, levels) {
+      const arr = [];
+      for (let z = 0; z < levels; z++) {
+        const size = baseSize - z;
+        arr.push(Array.from({ length: size }, () => Array.from({ length: size }, () => null)));
+      }
+      return arr;
+    }
+
+    function defaultChessLine(color) {
+      return ["rook","knight","bishop","queen","king","bishop","knight","rook"].map(type => ({ color, type }));
+    }
+
+    function setupDefaultPieces() {
+      const bottom = state.board[0];
+      if (!bottom || bottom.length < 8) return;
+      bottom[0] = defaultChessLine("black");
+      bottom[1] = Array.from({ length: 8 }, () => ({ color: "black", type: "pawn" }));
+      bottom[6] = Array.from({ length: 8 }, () => ({ color: "white", type: "pawn" }));
+      bottom[7] = defaultChessLine("white");
+    }
+
+    function inBounds(z, y, x) {
+      const layer = state.board[z];
+      return !!layer && y >= 0 && x >= 0 && y < layer.length && x < layer.length;
+    }
+
+    function addSlideMoves(out, z, y, x, dz, dy, dx, color) {
+      let nz = z + dz, ny = y + dy, nx = x + dx;
+      while (inBounds(nz, ny, nx)) {
+        const t = state.board[nz][ny][nx];
+        if (!t) out.push({ z: nz, y: ny, x: nx });
+        else {
+          if (t.color !== color) out.push({ z: nz, y: ny, x: nx, capture: true });
+          break;
+        }
+        nz += dz; ny += dy; nx += dx;
+      }
+    }
+
+    function getMoves(pos) {
+      const p = state.board[pos.z][pos.y][pos.x];
+      if (!p) return [];
+      const moves = [];
+      const enemy = p.color === "white" ? "black" : "white";
+
+      const directions = {
+        rook: [[1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]],
+        bishop: [[0,1,1],[0,1,-1],[0,-1,1],[0,-1,-1],[1,1,0],[1,-1,0],[-1,1,0],[-1,-1,0],[1,0,1],[1,0,-1],[-1,0,1],[-1,0,-1]],
+        queen: []
+      };
+      directions.queen = [...directions.rook, ...directions.bishop,
+        [1,1,1],[1,1,-1],[1,-1,1],[1,-1,-1],[-1,1,1],[-1,1,-1],[-1,-1,1],[-1,-1,-1]
+      ];
+
+      if (p.type === "rook" || p.type === "bishop" || p.type === "queen") {
+        for (const d of directions[p.type]) addSlideMoves(moves, pos.z, pos.y, pos.x, ...d, p.color);
+      }
+
+      if (p.type === "knight") {
+        const jumps = [];
+        const axes = ["z","y","x"];
+        for (let i = 0; i < 3; i++) {
+          for (let j = 0; j < 3; j++) {
+            if (i === j) continue;
+            const vec = [0,0,0];
+            vec[i] = 2; vec[j] = 1;
+            for (const s1 of [1,-1]) for (const s2 of [1,-1]) {
+              const v = [...vec]; v[i]*=s1; v[j]*=s2; jumps.push(v);
+            }
+          }
+        }
+        for (const [dz,dy,dx] of jumps) {
+          const nz = pos.z+dz, ny=pos.y+dy, nx=pos.x+dx;
+          if (!inBounds(nz,ny,nx)) continue;
+          const t = state.board[nz][ny][nx];
+          if (!t || t.color === enemy) moves.push({ z:nz, y:ny, x:nx, capture: !!t });
+        }
+      }
+
+      if (p.type === "king") {
+        for (let dz=-1; dz<=1; dz++) for (let dy=-1; dy<=1; dy++) for (let dx=-1; dx<=1; dx++) {
+          if (dz===0 && dy===0 && dx===0) continue;
+          const nz=pos.z+dz, ny=pos.y+dy, nx=pos.x+dx;
+          if (!inBounds(nz,ny,nx)) continue;
+          const t = state.board[nz][ny][nx];
+          if (!t || t.color===enemy) moves.push({z:nz,y:ny,x:nx,capture:!!t});
+        }
+      }
+
+      if (p.type === "pawn") {
+        const dir = p.color === "white" ? -1 : 1;
+        const one = { z: pos.z, y: pos.y + dir, x: pos.x };
+        if (inBounds(one.z, one.y, one.x) && !state.board[one.z][one.y][one.x]) moves.push(one);
+        const startRow = p.color === "white" ? 6 : 1;
+        const two = { z: pos.z, y: pos.y + dir*2, x: pos.x };
+        if (pos.z===0 && pos.y===startRow && inBounds(two.z,two.y,two.x) && !state.board[one.z][one.y][one.x] && !state.board[two.z][two.y][two.x]) moves.push(two);
+
+        for (const dx of [-1,1]) {
+          const cap = { z: pos.z, y: pos.y + dir, x: pos.x + dx };
+          if (inBounds(cap.z,cap.y,cap.x)) {
+            const t = state.board[cap.z][cap.y][cap.x];
+            if (t && t.color === enemy) moves.push({ ...cap, capture: true });
+          }
+        }
+
+        for (const dz of [-1, 1]) {
+          const climb = { z: pos.z + dz, y: pos.y + dir, x: pos.x };
+          if (inBounds(climb.z, climb.y, climb.x) && !state.board[climb.z][climb.y][climb.x]) moves.push(climb);
+        }
+      }
+
+      return dedupeMoves(moves);
+    }
+
+    function dedupeMoves(moves) {
+      const map = new Map();
+      for (const m of moves) map.set(`${m.z},${m.y},${m.x}`, m);
+      return [...map.values()];
+    }
+
+    function clickCell(z, y, x) {
+      const piece = state.board[z][y][x];
+      const key = `${z},${y},${x}`;
+
+      if (state.selected) {
+        const found = state.validMoves.find(m => `${m.z},${m.y},${m.x}` === key);
+        if (found) {
+          const from = state.selected;
+          state.board[z][y][x] = state.board[from.z][from.y][from.x];
+          state.board[from.z][from.y][from.x] = null;
+          state.turn = state.turn === "white" ? "black" : "white";
+          clearSelection();
+          render();
+          return;
+        }
+      }
+
+      if (piece && piece.color === state.turn) {
+        state.selected = { z, y, x };
+        state.validMoves = getMoves(state.selected);
+      } else {
+        clearSelection();
+      }
+      render();
+    }
+
+    function clearSelection() {
+      state.selected = null;
+      state.validMoves = [];
+    }
+
+    function render() {
+      boardEl.innerHTML = "";
+      state.board.forEach((layer, z) => {
+        const levelWrap = document.createElement("section");
+        levelWrap.className = "level";
+        const h = document.createElement("h3");
+        h.textContent = `Level ${z} (${layer.length} x ${layer.length})`;
+        const grid = document.createElement("div");
+        grid.className = "grid";
+        grid.style.gridTemplateColumns = `repeat(${layer.length}, 44px)`;
+
+        layer.forEach((row, y) => row.forEach((cell, x) => {
+          const btn = document.createElement("button");
+          btn.className = `cell ${(x+y+z)%2===0 ? "light" : "dark"}`;
+          if (state.selected && state.selected.z===z && state.selected.y===y && state.selected.x===x) btn.classList.add("selected");
+          const move = state.validMoves.find(m => m.z===z && m.y===y && m.x===x);
+          if (move) btn.classList.add(move.capture ? "capture" : "valid");
+          btn.textContent = cell ? PIECES[cell.color][cell.type] : "";
+          btn.title = `${z},${y},${x}`;
+          btn.onclick = () => clickCell(z,y,x);
+          grid.appendChild(btn);
+        }));
+
+        levelWrap.append(h, grid);
+        boardEl.appendChild(levelWrap);
+      });
+      statusEl.textContent = `${state.turn[0].toUpperCase() + state.turn.slice(1)} の手番です`;
+    }
+
+    function regen(defaultSetup = true) {
+      const baseSize = Number(document.getElementById("baseSize").value);
+      const levels = Number(document.getElementById("levels").value);
+      if (levels > baseSize - 1) {
+        alert("レベル数は baseSize - 1 以下にしてください。");
+        return;
+      }
+      state.config = { baseSize, levels };
+      state.board = makeEmptyBoard(baseSize, levels);
+      state.turn = "white";
+      clearSelection();
+      if (defaultSetup) setupDefaultPieces();
+      render();
+    }
+
+    document.getElementById("resetDefault").addEventListener("click", () => regen(true));
+    document.getElementById("clearBoard").addEventListener("click", () => regen(false));
+
+    regen(true);
+  </script>
+</body>
+</html>
